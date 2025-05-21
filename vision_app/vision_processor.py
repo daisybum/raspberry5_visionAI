@@ -1,312 +1,243 @@
+from __future__ import annotations
+
+"""Vision Processor
+
+Raspberry Pi + LiteRT 추론 파이프라인
+✓ 세그멘테이션 + 분류 모델 동시 실행
+✓ Redis 로 결과 전송
+✓ libcamera-still 로 주기적 캡처
+
+2025‑05‑21 리팩터링 포인트
+‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
+1. 타입 힌트 오류 수정 (tflite → Interpreter)
+2. 양자화 dtype 자동 대응
+3. `json` 직렬화로 Redis 호환성 향상
+4. XNNPACK delegate 이중 경로 시도
+5. `with Image.open` 으로 메모리 안정성
+6. `logger.exception` 채택으로 스택 추적 기록
+"""
+
+import io
+import json
+import logging
 import os
+import subprocess
 import time
 import uuid
-import logging
-import subprocess
-import io
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-import redis
 import numpy as np
+import redis
 from PIL import Image
-# LiteRT를 사용하기 위한 임포트
-from tflite_runtime import Interpreter
 from tflite_runtime import load_delegate
+from tflite_runtime.interpreter import Interpreter
 
-# Configure logging
+# ─── 로깅 설정 ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [VISION] %(levelname)s: %(message)s"
+    format="%(asctime)s [VISION] %(levelname)s: %(message)s",
 )
 logger = logging.getLogger("vision_processor")
 
-# Configuration
+# ─── 환경 변수 로드 ────────────────────────────────────────────────────────
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-SEG_MODEL_PATH = os.getenv("SEG_MODEL", "/models/seg_model.tflite")
-CLS_MODEL_PATH = os.getenv("CLS_MODEL", "/models/cls_model.tflite")
+SEG_MODEL_PATH = Path(os.getenv("SEG_MODEL", "/models/seg_model.tflite"))
+CLS_MODEL_PATH = Path(os.getenv("CLS_MODEL", "/models/cls_model.tflite"))
 CAPTURE_INTERVAL = int(os.getenv("INTERVAL", "30"))
 NUM_THREADS = int(os.getenv("NUM_THREADS", "4"))
 TMP_IMG = Path("/tmp/cap.jpg")
-CAP_CMD = ["libcamera-still", "-n", "-o", "{dst}", "--width", "1640", "--height", "1232"]
-MAX_REDIS_RETRIES = 3
+CAP_CMD = [
+    "libcamera-still",
+    "-n",
+    "-o",
+    "{dst}",
+    "--width",
+    "1640",
+    "--height",
+    "1232",
+]
 
-# ─── Model Loading ──────────────────────────────────────
+# ─── Delegate 헬퍼 ─────────────────────────────────────────────────────────
+
+def _load_xnnpack_delegate() -> Optional[Any]:
+    """XNNPACK delegate 로드 (경로 변종 대응)"""
+    for lib in ("libxnnpack.so", "libtensorflowlite_delegate_xnnpack.so"):
+        try:
+            return load_delegate(lib)
+        except Exception:
+            continue
+    return None
+
+# ─── 모델 로드 ────────────────────────────────────────────────────────────
+
 def load_models() -> Tuple[Interpreter, Interpreter]:
-    """Load TFLite models
-    
-    Returns:
-        Tuple of (segmentation_interpreter, classification_interpreter)
-    """
-    try:
-        # Load segmentation model
-        logger.info(f"Loading segmentation model from {SEG_MODEL_PATH}")
-        # LiteRT를 사용하여 세그멘테이션 모델 로드 (XNNPACK 델리게이트 사용)
-        try:
-            # 먼저 XNNPACK 델리게이트 사용 시도
-            xnnpack_delegate = load_delegate('libxnnpack.so')
-            seg_interp = Interpreter(
-                model_path=str(SEG_MODEL_PATH),
-                num_threads=NUM_THREADS,
-                experimental_delegates=[xnnpack_delegate]
-            )
-        except Exception as e:
-            logger.warning(f"XNNPACK 델리게이트 로드 실패, 기본 인터프리터 사용: {e}")
-            seg_interp = Interpreter(
-                model_path=str(SEG_MODEL_PATH),
-                num_threads=NUM_THREADS
-            )
-        seg_interp.allocate_tensors()
-        
-        # Get input and output details
-        seg_input_details = seg_interp.get_input_details()
-        seg_output_details = seg_interp.get_output_details()
-        seg_input_shape = seg_input_details[0]['shape']
-        seg_h, seg_w = seg_input_shape[1], seg_input_shape[2]
-        logger.info(f"Segmentation model loaded, input size: {seg_w}x{seg_h}")
-        
-        # Load classification model
-        logger.info(f"Loading classification model from {CLS_MODEL_PATH}")
-        # LiteRT를 사용하여 분류 모델 로드 (XNNPACK 델리게이트 사용)
-        try:
-            # 먼저 XNNPACK 델리게이트 사용 시도
-            xnnpack_delegate = load_delegate('libxnnpack.so')
-            cls_interp = Interpreter(
-                model_path=str(CLS_MODEL_PATH),
-                num_threads=NUM_THREADS,
-                experimental_delegates=[xnnpack_delegate]
-            )
-        except Exception as e:
-            logger.warning(f"XNNPACK 델리게이트 로드 실패, 기본 인터프리터 사용: {e}")
-            cls_interp = Interpreter(
-                model_path=str(CLS_MODEL_PATH),
-                num_threads=NUM_THREADS
-            )
-        cls_interp.allocate_tensors()
-        
-        # Get input and output details
-        cls_input_details = cls_interp.get_input_details()
-        cls_output_details = cls_interp.get_output_details()
-        cls_input_shape = cls_input_details[0]['shape']
-        cls_h, cls_w = cls_input_shape[1], cls_input_shape[2]
-        logger.info(f"Classification model loaded, input size: {cls_w}x{cls_h}")
-        
-        return seg_interp, cls_interp
-        
-    except Exception as e:
-        logger.error(f"Failed to load models: {e}")
-        raise
+    """세그멘테이션·분류 모델 동시 로드 및 tensors 할당"""
+    delegate = _load_xnnpack_delegate()
 
-# ─── Image Capture ──────────────────────────────────────
+    def _new_interpreter(model_path: Path) -> Interpreter:
+        kwargs = {"model_path": str(model_path), "num_threads": NUM_THREADS}
+        if delegate is not None:
+            kwargs["experimental_delegates"] = [delegate]
+        return Interpreter(**kwargs)
+
+    try:
+        logger.info(f"Loading segmentation model → {SEG_MODEL_PATH}")
+        seg = _new_interpreter(SEG_MODEL_PATH)
+        seg.allocate_tensors()
+        seg_shape = seg.get_input_details()[0]["shape"]
+        logger.info(f"Seg input size: {seg_shape[2]}×{seg_shape[1]}")
+
+        logger.info(f"Loading classification model → {CLS_MODEL_PATH}")
+        cls = _new_interpreter(CLS_MODEL_PATH)
+        cls.allocate_tensors()
+        cls_shape = cls.get_input_details()[0]["shape"]
+        logger.info(f"Cls input size: {cls_shape[2]}×{cls_shape[1]}")
+
+        return seg, cls
+    except Exception as exc:
+        logger.exception("모델 로드 실패")
+        raise exc
+
+# ─── 카메라 캡처 ──────────────────────────────────────────────────────────
+
 def capture_image() -> Optional[bytes]:
-    """Capture an image using libcamera-still
-    
-    Returns:
-        Raw image bytes if successful, None otherwise
-    """
-    try:
-        # Use subprocess instead of os.system for better error handling
-        cmd = [part.format(dst=TMP_IMG) if "{dst}" in part else part for part in CAP_CMD]
-        logger.debug(f"Running capture command: {' '.join(cmd)}")
-        
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        
-        if result.returncode != 0:
-            logger.error(f"Capture failed with code {result.returncode}: {result.stderr}")
-            return None
-            
-        if not TMP_IMG.exists():
-            logger.error("Capture command succeeded but no image file was created")
-            return None
-            
-        # Read image and clean up
-        raw = TMP_IMG.read_bytes()
-        TMP_IMG.unlink(missing_ok=True)
-        logger.debug(f"Captured image: {len(raw)} bytes")
-        return raw
-        
-    except Exception as e:
-        logger.error(f"Error during image capture: {e}")
+    cmd = [part.format(dst=str(TMP_IMG)) for part in CAP_CMD]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        logger.error(f"Capture failed ({res.returncode}): {res.stderr.strip()}")
         return None
+    if not TMP_IMG.exists():
+        logger.error("Capture command 성공 → 파일 없음")
+        return None
+    raw = TMP_IMG.read_bytes()
+    TMP_IMG.unlink(missing_ok=True)
+    return raw
 
-# ─── Image Processing ────────────────────────────────────
+# ─── 전처리 유틸 ───────────────────────────────────────────────────────────
+
+def _prepare_input(img: Image.Image, target_hw: Tuple[int, int], details: Dict) -> np.ndarray:
+    """dtype·양자화 정보에 맞춰 배열 작성"""
+    w, h = target_hw
+    arr = np.asarray(img.resize((w, h))).astype(np.float32) / 255.0
+
+    dtype = details["dtype"]
+    if dtype == np.uint8:
+        arr = (arr * 255).astype(np.uint8)
+    elif dtype == np.int8:
+        scale, zero = details["quantization"]
+        arr = ((arr / scale) + zero).astype(np.int8)
+    return np.expand_dims(arr, 0)
+
+# ─── 이미지 추론 ───────────────────────────────────────────────────────────
+
 def process_image(
-    image_data: bytes, 
-    seg_interp: tflite.Interpreter, 
-    cls_interp: tflite.Interpreter
+    image_data: bytes,
+    seg_interp: Interpreter,
+    cls_interp: Interpreter,
 ) -> Dict[str, Any]:
-    """Process image with both segmentation and classification models
-    
-    Args:
-        image_data: Raw image bytes
-        seg_interp: Segmentation model interpreter
-        cls_interp: Classification model interpreter
-        
-    Returns:
-        Dictionary with combined results
-    """
-    start_time = time.time()
-    
+    ts0 = time.time()
     try:
-        # Load and preprocess image
-        pil_img = Image.open(io.BytesIO(image_data)).convert("RGB")
-        
-        # Get input details
-        seg_input_details = seg_interp.get_input_details()
-        seg_output_details = seg_interp.get_output_details()
-        cls_input_details = cls_interp.get_input_details()
-        cls_output_details = cls_interp.get_output_details()
-        
-        # Get input shapes
-        seg_input_shape = seg_input_details[0]['shape']
-        cls_input_shape = cls_input_details[0]['shape']
-        seg_h, seg_w = seg_input_shape[1], seg_input_shape[2]
-        cls_h, cls_w = cls_input_shape[1], cls_input_shape[2]
-        
-        # Segmentation inference
-        seg_img = pil_img.resize((seg_w, seg_h))
-        seg_array = np.asarray(seg_img).astype(np.float32) / 255.0
-        seg_array = np.expand_dims(seg_array, axis=0)
-        
-        seg_interp.set_tensor(seg_input_details[0]['index'], seg_array)
-        seg_interp.invoke()
-        mask = seg_interp.get_tensor(seg_output_details[0]['index'])
-        
-        # Post-process segmentation result
-        if mask.ndim == 4:  # [batch, height, width, classes]
-            mask = mask[0]  # Remove batch dimension
-        
-        if mask.shape[-1] > 1:  # Multiple classes
-            mask = np.argmax(mask, axis=-1).astype(np.uint8)
-        else:  # Binary mask
-            mask = (mask > 0.5).astype(np.uint8)
-        
-        # Classification inference
-        cls_img = pil_img.resize((cls_w, cls_h))
-        cls_array = np.asarray(cls_img).astype(np.float32) / 255.0
-        cls_array = np.expand_dims(cls_array, axis=0)
-        
-        cls_interp.set_tensor(cls_input_details[0]['index'], cls_array)
-        cls_interp.invoke()
-        output_data = cls_interp.get_tensor(cls_output_details[0]['index'])
-        
-        # Post-process classification result
-        scores = output_data[0]
-        top_class_idx = np.argmax(scores)
-        top_score = float(scores[top_class_idx])
-        
-        # Return combined results
-        result = {
+        with Image.open(io.BytesIO(image_data)) as pil:
+            pil = pil.convert("RGB")
+
+            # 세그멘테이션 ———————————————————————————————
+            seg_in = seg_interp.get_input_details()[0]
+            seg_arr = _prepare_input(pil, (seg_in["shape"][2], seg_in["shape"][1]), seg_in)
+            seg_interp.set_tensor(seg_in["index"], seg_arr)
+            seg_interp.invoke()
+            seg_out = seg_interp.get_output_details()[0]
+            mask = seg_interp.get_tensor(seg_out["index"])[0]
+            if mask.shape[-1] > 1:
+                mask = np.argmax(mask, axis=-1)
+            else:
+                if mask.dtype != np.float32:
+                    mask = mask.astype(np.float32)
+                mask = (mask > 0.0).astype(np.uint8)
+
+            # 분류 ———————————————————————————————————
+            cls_in = cls_interp.get_input_details()[0]
+            cls_arr = _prepare_input(pil, (cls_in["shape"][2], cls_in["shape"][1]), cls_in)
+            cls_interp.set_tensor(cls_in["index"], cls_arr)
+            cls_interp.invoke()
+            cls_out = cls_interp.get_output_details()[0]
+            scores = cls_interp.get_tensor(cls_out["index"])[0]
+            top_idx = int(scores.argmax())
+            top_score = float(scores[top_idx])
+
+        return {
             "segmentation": {
-                "mask_shape": list(mask.shape),
+                "mask_shape": mask.shape,
                 "unique_labels": np.unique(mask).tolist(),
             },
-            "classification": {
-                "id": int(top_class_idx),
-                "score": top_score,
-            },
-            "inference_time_ms": int((time.time() - start_time) * 1000)
+            "classification": {"id": top_idx, "score": top_score},
+            "inference_time_ms": int((time.time() - ts0) * 1000),
         }
-        
-        logger.info(f"Inference complete in {result['inference_time_ms']}ms")
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error processing image: {e}")
+    except Exception as exc:
+        logger.exception("추론 실패")
         return {
-            "error": str(e),
-            "inference_time_ms": int((time.time() - start_time) * 1000)
+            "error": str(exc),
+            "inference_time_ms": int((time.time() - ts0) * 1000),
         }
 
-# ─── Redis Operations ─────────────────────────────────────
-def store_result_in_redis(result: Dict[str, Any], r: redis.Redis) -> str:
-    """Store inference result in Redis
-    
-    Args:
-        result: Inference result dictionary
-        r: Redis connection
-        
-    Returns:
-        Redis key where result is stored
-    """
+# ─── Redis 저장 ───────────────────────────────────────────────────────────
+
+def store_result(r: redis.Redis, result: Dict[str, Any]) -> Optional[str]:
     key = f"result:{uuid.uuid4().hex}"
     try:
-        r.set(key, str(result), ex=3600)  # Store for 1 hour
-        logger.debug(f"Stored result in Redis: {key}")
+        r.set(key, json.dumps(result, ensure_ascii=False), ex=3600)
         return key
-    except redis.RedisError as e:
-        logger.error(f"Failed to store result in Redis: {e}")
-        return ""
+    except redis.RedisError:
+        logger.exception("Redis 저장 실패")
+        return None
 
-# ─── Main Loop ────────────────────────────────────────────
+# ─── 메인 루프 ────────────────────────────────────────────────────────────
+
 def main() -> None:
-    """Main processing loop"""
-    logger.info(f"Starting vision processor with {CAPTURE_INTERVAL}s interval")
-    
-    # Load models
-    try:
-        seg_interp, cls_interp = load_models()
-    except Exception as e:
-        logger.error(f"Failed to initialize: {e}")
-        return
-    
-    # Connect to Redis
+    logger.info(f"Vision processor 시작 (캡처 주기 {CAPTURE_INTERVAL}s)")
+
+    # 모델 로드
+    seg, cls = load_models()
+
+    # Redis 접속
     try:
         r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
-        r.ping()  # Test connection
-        logger.info(f"Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
-    except redis.ConnectionError as e:
-        logger.error(f"Failed to connect to Redis: {e}")
+        r.ping()
+        logger.info(f"Redis 연결 성공 → {REDIS_HOST}:{REDIS_PORT}")
+    except redis.ConnectionError:
+        logger.exception("Redis 연결 실패·비활성화 모드로 진행")
         r = None
-    
-    # Main processing loop
+
     while True:
         try:
-            # 1. Capture image
-            logger.info("Capturing image...")
-            image_data = capture_image()
-            if not image_data:
-                logger.warning("Capture failed, will retry after interval")
+            logger.info("이미지 캡처…")
+            data = capture_image()
+            if data is None:
                 time.sleep(CAPTURE_INTERVAL)
                 continue
-            
-            # 2. Process image
-            logger.info("Processing image...")
-            result = process_image(image_data, seg_interp, cls_interp)
-            
-            # 3. Store result in Redis if available
-            if r:
-                try:
-                    result_key = store_result_in_redis(result, r)
-                    if result_key:
-                        logger.info(f"Result stored in Redis: {result_key}")
-                except Exception as e:
-                    logger.error(f"Redis error: {e}")
-            
-            # 4. Log detailed results
-            seg_result = result.get("segmentation", {})
-            cls_result = result.get("classification", {})
-            
-            logger.info("Processing results:")
-            logger.info(f"  Segmentation: mask shape={seg_result.get('mask_shape', [])}, labels={seg_result.get('unique_labels', [])}")
-            logger.info(f"  Classification: class={cls_result.get('id', -1)}, score={cls_result.get('score', 0.0):.4f}")
-            logger.info(f"  Inference time: {result.get('inference_time_ms', 0)}ms")
-            
-            # 5. Wait for next interval
-            logger.info(f"Waiting {CAPTURE_INTERVAL}s until next capture...")
+
+            logger.info("이미지 추론…")
+            result = process_image(data, seg, cls)
+
+            if r is not None:
+                key = store_result(r, result)
+                if key:
+                    logger.info(f"결과 Redis 저장 → {key}")
+
+            logger.info(
+                "Seg labels=%s | Cls=(%d, %.3f) | %.1f ms",
+                result.get("segmentation", {}).get("unique_labels"),
+                result.get("classification", {}).get("id", -1),
+                result.get("classification", {}).get("score", 0.0),
+                result.get("inference_time_ms", 0),
+            )
             time.sleep(CAPTURE_INTERVAL)
-                
         except KeyboardInterrupt:
-            logger.info("Shutting down vision processor")
+            logger.info("종료 신호 수신·중단")
             break
-        except Exception as e:
-            logger.error(f"Unexpected error in main loop: {e}")
+        except Exception:
+            logger.exception("메인 루프 예외")
             time.sleep(CAPTURE_INTERVAL)
 
 
