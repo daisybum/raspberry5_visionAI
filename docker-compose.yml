@@ -22,7 +22,7 @@ services:
       - CLS_MODEL=/models/cls_model_int8.tflite
       - REDIS_HOST=redis
       - INTERVAL=30                        # 캡처 주기(초)
-      - NUM_THREADS=4                      # Raspberry Pi 5 CPU 코어 수에 맞게 조정
+      - NUM_THREADS=2                       # Raspberry Pi 5 CPU 코어 수에 맞게 조정
     depends_on:
       - redis
     restart: unless-stopped

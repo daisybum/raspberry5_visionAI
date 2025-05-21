@@ -43,9 +43,9 @@ WORKDIR /app
 COPY pseudo_processor.py .
 
 # 5) 스레드 관련 환경 변수
-ENV NUM_THREADS=4 \
-    OMP_NUM_THREADS=4 \
-    OPENBLAS_NUM_THREADS=4 \
-    MKL_NUM_THREADS=4
+ENV NUM_THREADS=2 \
+    OMP_NUM_THREADS=2 \
+    OPENBLAS_NUM_THREADS=2 \
+    MKL_NUM_THREADS=2
 
 ENTRYPOINT ["python", "-u", "pseudo_processor.py"]
