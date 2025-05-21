@@ -37,10 +37,10 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 SEG_MODEL_PATH = Path(os.getenv("SEG_MODEL", "/models/seg_model_int8.tflite"))
 CLS_MODEL_PATH = Path(os.getenv("CLS_MODEL", "/models/cls_model_int8.tflite"))
 
-CAPTURE_INTERVAL = 120  # ★ 2 분
+CAPTURE_INTERVAL = 0  # ★ 2 분
 SAMPLE_IMG_PATH = Path("./data/example.jpg")  # ★ 고정 입력 이미지
 
-NUM_THREADS = int(os.getenv("NUM_THREADS", "4"))
+NUM_THREADS = int(os.getenv("NUM_THREADS", "2"))
 
 # ─── Delegate 헬퍼 ────────────────────────────────────────────────────────
 def _load_xnnpack_delegate() -> Optional[Any]:
