@@ -1,45 +1,51 @@
-FROM arm64v8/python:3.9-slim-bullseye
+# ────────────────────────────────────────────────────────
+#  Raspberry Pi 5  Vision Processor  (LiteRT + libcamera)
+# ────────────────────────────────────────────────────────
+FROM arm64v8/python:3.11-slim-bookworm
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies
+# 1) 시스템 / 개발 패키지
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    python3-dev \
-    python3-pip \
-    python3-setuptools \
-    python3-wheel \
-    libopenblas-dev \
-    libjpeg-dev \
-    zlib1g-dev \
+        # ── 빌드 도구 ──────────────────────────────────
+        build-essential python3-dev git pkg-config cmake meson ninja-build \
+        # ── 필수 라이브러리 (libcamera·OpenCV 의존) ──
+        libboost-program-options-dev libboost-dev                    \
+        libgnutls28-dev libssl-dev                                  \
+        libdrm-dev libudev-dev libexif-dev libyaml-cpp-dev           \
+        libjpeg-dev libpng-dev libtiff5-dev                          \
+        libglib2.0-dev                                              \
+        # ── 선택 기능(GStreamer·FFmpeg·Qt·BLAS) ───────────
+        libgstreamer-plugins-base1.0-dev                            \
+        libavcodec-dev libavformat-dev libswscale-dev               \
+        qtbase5-dev libqt5core5a libqt5widgets5                     \
+        libopenblas-base                                            \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Raspberry Pi camera dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libcamera-apps \
-    && rm -rf /var/lib/apt/lists/*
+# ── (선택) libcamera 소스 빌드 ───────────────────────────
+# 라즈베리파이 OS가 아닌 순수 Debian 기반일 경우 libcamera-apps
+# 패키지가 없으므로, 필요한 경우 아래 블록을 주석 해제해 직접 빌드
+#
+# RUN git clone --depth 1 https://git.libcamera.org/libcamera/libcamera.git && \
+#     meson setup build libcamera -Dpipelines=raspberrypi -Dcam=enabled && \
+#     ninja -C build && ninja -C build install && ldconfig && \
+#     rm -rf libcamera
 
-# Install Python dependencies
-RUN pip install --no-cache-dir \
-    numpy~=1.24 \
-    pillow~=10.0 \
-    redis~=5.0
+# 2) python → python3 심볼릭 링크 통합
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1
 
-# Install LiteRT (TensorFlow Lite Runtime optimized for ARM64)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libxnnpack-dev \
-    && rm -rf /var/lib/apt/lists/*
+# 3) pip 최신화 + Python 패키지
+RUN python -m pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir \
+        numpy pillow redis tqdm pycocotools jinja2 pyyaml ply tflite-runtime
 
-# Install TensorFlow Lite Runtime with LiteRT optimizations
-RUN pip install --no-cache-dir \
-    https://github.com/google-coral/pycoral/releases/download/v2.0.0/tflite_runtime-2.5.0.post1-cp39-cp39-linux_aarch64.whl
-
+# 4) 애플리케이션
 WORKDIR /app
 COPY vision_processor.py .
 
-# Set environment variables for optimization
-ENV NUM_THREADS=4
-ENV OMP_NUM_THREADS=4
-ENV OPENBLAS_NUM_THREADS=4
-ENV MKL_NUM_THREADS=4
+# 5) 스레드 관련 환경 변수
+ENV NUM_THREADS=4 \
+    OMP_NUM_THREADS=4 \
+    OPENBLAS_NUM_THREADS=4 \
+    MKL_NUM_THREADS=4
 
 ENTRYPOINT ["python", "-u", "vision_processor.py"]
