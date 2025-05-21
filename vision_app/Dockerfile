@@ -30,4 +30,5 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 WORKDIR /app
 COPY pseudo_processor.py .
 
-ENTRYPOINT ["python", "-u", "pseudo_processor.py"]
+ENTRYPOINT ["tail", "-f", "/dev/null"]
+# ENTRYPOINT ["python", "-u", "pseudo_processor.py"]
