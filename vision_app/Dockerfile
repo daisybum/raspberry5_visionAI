@@ -9,14 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl gnupg ca-certificates apt-transport-https
 
-# Coral EdgeTPU
-RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
-        | gpg --dearmor -o /usr/share/keyrings/coral-edgetpu-archive-keyring.gpg \
- && echo "deb [signed-by=/usr/share/keyrings/coral-edgetpu-archive-keyring.gpg] "\
-        "https://packages.cloud.google.com/apt coral-edgetpu-stable main" \
-        > /etc/apt/sources.list.d/coral-edgetpu.list
-
-# Raspberry Pi(bookworm)
+# ── Raspberry Pi(bookworm) ────────────────────────
 RUN curl -fsSL https://archive.raspberrypi.org/debian/raspberrypi.gpg.key \
         | gpg --dearmor -o /usr/share/keyrings/raspberrypi-archive-keyring.gpg \
  && echo "deb [signed-by=/usr/share/keyrings/raspberrypi-archive-keyring.gpg] "\
@@ -46,14 +39,9 @@ RUN git clone --depth 1 https://git.libcamera.org/libcamera/libcamera.git /src/l
 FROM arm64v8/python:3.11-slim-bookworm
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 레포지토리(GPG) 동일하게 추가
+# ── 레포지토리(GPG) 동일하게 추가 ──────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl gnupg ca-certificates apt-transport-https \
- && curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
-        | gpg --dearmor -o /usr/share/keyrings/coral-edgetpu-archive-keyring.gpg \
- && echo "deb [signed-by=/usr/share/keyrings/coral-edgetpu-archive-keyring.gpg] "\
-        "https://packages.cloud.google.com/apt coral-edgetpu-stable main" \
-        > /etc/apt/sources.list.d/coral-edgetpu.list \
  && curl -fsSL https://archive.raspberrypi.org/debian/raspberrypi.gpg.key \
         | gpg --dearmor -o /usr/share/keyrings/raspberrypi-archive-keyring.gpg \
  && echo "deb [signed-by=/usr/share/keyrings/raspberrypi-archive-keyring.gpg] "\
@@ -69,7 +57,7 @@ RUN apt-get install -y --no-install-recommends \
         libjpeg-turbo8 libpng16-16 libtiff5 libdrm2 libudev1 libglib2.0-0 libexif12 \
  && rm -rf /var/lib/apt/lists/*
 
-# ── 빌드 스테이지에서 컴파일된 libcamera 복사 ─────
+# ── 빌드 스테이지에서 컴파일된 libcamera 복사 ───── 
 COPY --from=builder /usr/local /usr/local
 
 # ── python ↔ python3 심볼릭 링크 ────────────────
