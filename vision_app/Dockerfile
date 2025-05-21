@@ -40,7 +40,7 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
 
 # 4) 애플리케이션
 WORKDIR /app
-COPY vision_processor.py .
+COPY pseudo_processor.py .
 
 # 5) 스레드 관련 환경 변수
 ENV NUM_THREADS=4 \
@@ -48,4 +48,4 @@ ENV NUM_THREADS=4 \
     OPENBLAS_NUM_THREADS=4 \
     MKL_NUM_THREADS=4
 
-ENTRYPOINT ["python", "-u", "vision_processor.py"]
+ENTRYPOINT ["python", "-u", "pseudo_processor.py"]
