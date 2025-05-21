@@ -48,10 +48,7 @@ RUN set -eux; \
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        libedgetpu1-std \
-        python3-pycoral \
         python3-tflite-runtime \
-        libhdf5-dev \
         python3-picamera2; \
     rm -rf /var/lib/apt/lists/*
 
@@ -79,8 +76,7 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
         pillow \
         pycocotools \
         pyyaml \
-        tensorflow && \
-    python3 -m pip install --extra-index-url https://google-coral.github.io/py-repo/ pycoral~=2.0
+        tflite-runtime
 
 # ── 애플리케이션 복사 & 기본 실행 ───────────────────────────────────────────
 WORKDIR /app
