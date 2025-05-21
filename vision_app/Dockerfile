@@ -77,7 +77,7 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
         pycocotools \
         pyyaml \
         redis \
-        tflite-runtime==2.5.0.post1
+        tflite-runtime==2.7.0
 
 # ── 애플리케이션 복사 & 기본 실행 ───────────────────────────────────────────
 WORKDIR /app
