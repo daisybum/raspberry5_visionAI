@@ -44,15 +44,7 @@ RUN set -eux; \
     # APT 캐시 정리
     rm -rf /var/lib/apt/lists/*
 
-# 3) Coral EdgeTPU 및 기타 필수 패키지 설치
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        python3-tflite-runtime \
-        python3-picamera2; \
-    rm -rf /var/lib/apt/lists/*
-
-# 4) libcamera 소스 클론 및 빌드
+# 3) libcamera 소스 클론 및 빌드
 RUN git clone https://git.libcamera.org/libcamera/libcamera.git /libcamera && \
     sed -i '/removeprefix/s/\(.*\)= kebab_case(\(.*\)\.removeprefix(\(.*\)))$/\1 = kebab_case((\2[len(\3):] if \2.startswith(\3) else \2))/' /libcamera/utils/codegen/gen-gst-controls.py && \
     cd /libcamera && \
@@ -61,7 +53,7 @@ RUN git clone https://git.libcamera.org/libcamera/libcamera.git /libcamera && \
     ninja -C build install && \
     echo "/usr/local/lib" > /etc/ld.so.conf.d/libcamera.conf && ldconfig
 
-# 4-1) libcamera-apps 소스 클론 및 빌드 
+# 4) libcamera-apps 설치
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libcamera-apps
 
