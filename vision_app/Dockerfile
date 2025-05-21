@@ -68,8 +68,8 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
         pillow \
         pycocotools \
         pyyaml \
-        redis && \
-    python -m pip install --extra-index-url https://google-coral.github.io/py-repo/ pycoral~=2.0
+        redis \
+        tflite-runtime==2.11.1
 
 # ── 애플리케이션 복사 & 기본 실행 ───────────────────────────────────────────
 WORKDIR /app
