@@ -21,8 +21,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 import redis
 from PIL import Image
-from tflite_runtime import load_delegate
-from tflite_runtime.interpreter import Interpreter
+from tflite_runtime.interpreter import Interpreter, load_delegate
 
 # ─── 로깅 설정 ───────────────────────────────────────────────────────────
 logging.basicConfig(
