@@ -5,8 +5,9 @@ Vision Processor (no-camera version)
 
 ✓ 세그멘테이션 + 분류 모델 동시 실행
 ✓ Redis로 결과 전송
-✓ ./data/example.jpg를 2 분마다 추론
+✓ ./data/example.jpg를 2분마다 추론
 ✓ 2025-05-21 리팩터링 포인트 반영
+✓ ────────────── 시각화 기능 추가 ──────────────
 """
 
 import io
@@ -16,12 +17,17 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import redis
 from PIL import Image
 from tflite_runtime.interpreter import Interpreter, load_delegate
+
+# ─── 새로 추가된 의존성 ─────────────────────────
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+# ------------------------------------------------
 
 # ─── 로깅 설정 ───────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -36,10 +42,23 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 SEG_MODEL_PATH = Path(os.getenv("SEG_MODEL", "/models/seg_model_int8.tflite"))
 CLS_MODEL_PATH = Path(os.getenv("CLS_MODEL", "/models/cls_model_int8.tflite"))
 
-CAPTURE_INTERVAL = 0  # ★ 2 분
+CAPTURE_INTERVAL = 0           # ★ 2분
 SAMPLE_IMG_PATH = Path("./data/example.jpg")  # ★ 고정 입력 이미지
-
 NUM_THREADS = int(os.getenv("NUM_THREADS", "2"))
+
+# ─── (시각화용) 팔레트 & 클래스명 ─────────────────────────────────────────
+#  필요 시 교체하세요.
+PALETTE = np.array(
+    [
+        (0, 0, 0),       # background
+        (255, 0, 0),     # class 1
+        (0, 255, 0),     # class 2
+        (0, 0, 255),     # class 3
+        (255, 255, 0),   # class 4 ...
+    ],
+    dtype=np.uint8,
+)
+CLASS_NAMES = [f"class_{i}" for i in range(len(PALETTE))]
 
 # ─── Delegate 헬퍼 ────────────────────────────────────────────────────────
 def _load_xnnpack_delegate() -> Optional[Any]:
@@ -83,6 +102,66 @@ def _prepare_input(img: Image.Image, target_hw: Tuple[int, int], details: Dict) 
         arr = ((arr / scale) + zero).astype(np.int8)
     return np.expand_dims(arr, 0)
 
+# ─── 시각화 함수들 ────────────────────────────────────────────────────────
+def create_legend_patches(
+    palette: np.ndarray | List[Tuple[int, int, int]],
+    class_names: List[str],
+):
+    """팔레트·클래스명으로 matplotlib Patch 리스트 생성."""
+    patches: List[mpatches.Patch] = []
+    for idx, (r, g, b) in enumerate(palette):
+        patches.append(
+            mpatches.Patch(
+                color=(r / 255, g / 255, b / 255),
+                label=class_names[idx],
+            )
+        )
+    return patches
+
+
+def visualize_and_save(  # save_image 기본값 False!
+    file_name: str,
+    orig: np.ndarray,
+    color_mask: np.ndarray,
+    overlay: np.ndarray,
+    legend_patches: List[mpatches.Patch],
+    output_dir: str = "./vis",
+    save_image: bool = False,
+) -> str:
+    """원본/마스크/오버레이 3분할 시각화(저장 안 함)."""
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig.suptitle(f"Segmentation – {file_name}", fontsize=16)
+
+    titles = ["Original", "Mask", "Overlay"]
+    images = [orig, color_mask, overlay]
+    for ax, img, title in zip(axes, images, titles):
+        ax.imshow(img)
+        ax.set_title(title, fontsize=14)
+        ax.axis("off")
+
+    fig.legend(
+        handles=legend_patches,
+        loc="center left",
+        bbox_to_anchor=(0.92, 0.5),
+        fontsize=12,
+    )
+    plt.tight_layout()
+    plt.subplots_adjust(right=0.85)
+
+    if save_image:
+        os.makedirs(output_dir, exist_ok=True)
+        out_path = os.path.join(
+            output_dir, f"{os.path.splitext(file_name)[0]}_visual.png"
+        )
+        fig.savefig(out_path)
+        plt.close(fig)
+        return out_path
+    else:
+        plt.show(block=False)
+        plt.pause(0.001)  # 짧게 띄워두기 (CLI 환경에선 무시)
+        plt.close(fig)
+        return "[Visualization shown only]"
+
 # ─── 이미지 추론 ──────────────────────────────────────────────────────────
 def process_image(
     pil: Image.Image,
@@ -111,6 +190,20 @@ def process_image(
         scores = cls_interp.get_tensor(cls_out["index"])[0]
         top_idx = int(scores.argmax())
         top_score = float(scores[top_idx])
+
+        # ── 시각화 준비 ────────────────────────────────────────────────
+        orig_np = np.asarray(pil)
+        color_mask = PALETTE[mask]                    # (H,W,3)
+        overlay = (0.4 * orig_np + 0.6 * color_mask).astype(np.uint8)
+        legend = create_legend_patches(PALETTE, CLASS_NAMES)
+        visualize_and_save(
+            file_name=Path(SAMPLE_IMG_PATH).name,
+            orig=orig_np,
+            color_mask=color_mask,
+            overlay=overlay,
+            legend_patches=legend,
+            save_image=False,                         # ← 저장 안 함
+        )
 
         return {
             "segmentation": {
@@ -172,7 +265,7 @@ def main() -> None:
             break
         except Exception:
             logger.exception("메인 루프 예외")
-        time.sleep(CAPTURE_INTERVAL)  # ★ 2 분 대기
+        time.sleep(CAPTURE_INTERVAL)  # ★ 2분 대기
 
 if __name__ == "__main__":
     main()
