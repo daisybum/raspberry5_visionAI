@@ -192,9 +192,21 @@ def process_image(
         top_score = float(scores[top_idx])
 
         # ── 시각화 준비 ────────────────────────────────────────────────
+        # ── 시각화 준비 ────────────────────────────────────────────────
         orig_np = np.asarray(pil)
-        color_mask = PALETTE[mask]                    # (H,W,3)
+
+        # 1) 모델 출력 마스크(예: 513×513)를 원본 해상도로 리사이즈
+        mask_resized = np.array(
+            Image.fromarray(mask.astype(np.uint8)).resize(
+                (orig_np.shape[1], orig_np.shape[0]),  # (W, H)
+                resample=Image.NEAREST,               # 레이블 보존
+            )
+        )
+
+        # 2) 컬러 마스크 & 오버레이 생성
+        color_mask = PALETTE[mask_resized]                 # (H, W, 3)
         overlay = (0.4 * orig_np + 0.6 * color_mask).astype(np.uint8)
+
         legend = create_legend_patches(PALETTE, CLASS_NAMES)
         visualize_and_save(
             file_name=Path(SAMPLE_IMG_PATH).name,
