@@ -74,5 +74,5 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
 # ── 애플리케이션 복사 & 기본 실행 ───────────────────────────────────────────
 WORKDIR /app
 COPY pseudo_processor.py .
-ENTRYPOINT ["tail", "-f", "/dev/null"]
-# 실제 실행:  ENTRYPOINT ["python", "-u", "pseudo_processor.py"]
+# ENTRYPOINT ["tail", "-f", "/dev/null"]
+ENTRYPOINT ["python", "-u", "pseudo_processor.py"]
